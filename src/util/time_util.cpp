@@ -12,7 +12,12 @@ uint64_t now_unix_seconds() {
 
 std::string format_timestamp(uint64_t unix_seconds, const std::string& fmt) {
     std::time_t t = (std::time_t)unix_seconds;
-    std::tm tm{}; gmtime_r(&t, &tm);
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);   // MSVC/MinGW: args reversed, returns errno_t
+#else
+    gmtime_r(&t, &tm);   // POSIX
+#endif
     std::ostringstream os; os << std::put_time(&tm, fmt.c_str());
     return os.str();
 }
