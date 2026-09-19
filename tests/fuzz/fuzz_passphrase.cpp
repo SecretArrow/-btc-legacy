@@ -13,11 +13,12 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <filesystem>
 
 int fuzz_passphrase_verify(const std::vector<uint8_t>& data) {
     static bool init = false;
     static btclegacy::wallet::ParsedWallet wallet;
-    static std::string wallet_path = "/tmp/btc_legacy_fuzz_passphrase_wallet.dat";
+    static std::string wallet_path = (std::filesystem::temp_directory_path() / "btc_legacy_fuzz_passphrase_wallet.dat").string();
     if (!init) {
         btclegacy::wallet::MasterKey mk;
         btclegacy::platform::SecureBuffer master;

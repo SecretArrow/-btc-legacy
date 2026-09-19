@@ -11,10 +11,11 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 
 int fuzz_bdb_parse(const std::vector<uint8_t>& data) {
     // Write the data to a temp file, then attempt to open + iterate.
-    static const std::string tmp = "/tmp/btc_legacy_fuzz_bdb.dat";
+    static const std::string tmp = (std::filesystem::temp_directory_path() / "btc_legacy_fuzz_bdb.dat").string();
     if (!btclegacy::util::write_all(tmp, data)) return 0;
     btclegacy::bdb::Reader r;
     std::string err;

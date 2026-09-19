@@ -6,6 +6,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <filesystem>
 
 using namespace btclegacy::bdb;
 using namespace btclegacy::wallet;
@@ -13,7 +14,7 @@ using namespace btclegacy::wallet;
 TEST(bdb_writer_empty_then_read) {
     std::vector<WriteRecord> recs;
     std::string err;
-    std::string path = "/tmp/btc_legacy_bdb_empty_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_bdb_empty_test.dat").string();
     bool ok = write_bdb_hash_file(path, recs, 4096, &err);
     EXPECT(ok);
     if (!ok) return;
@@ -37,7 +38,7 @@ TEST(bdb_writer_simple_roundtrip) {
     b.value = {'A','d','d','r','e','s','s',' ','1'};
     std::vector<WriteRecord> recs = {a, b};
     std::string err;
-    std::string path = "/tmp/btc_legacy_bdb_simple_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_bdb_simple_test.dat").string();
     bool ok = write_bdb_hash_file(path, recs, 4096, &err);
     EXPECT(ok);
     if (!ok) return;
@@ -72,7 +73,7 @@ TEST(bdb_writer_large_record_set) {
         recs.push_back(r);
     }
     std::string err;
-    std::string path = "/tmp/btc_legacy_bdb_large_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_bdb_large_test.dat").string();
     bool ok = write_bdb_hash_file(path, recs, 4096, &err);
     EXPECT(ok);
     if (!ok) return;
@@ -109,7 +110,7 @@ TEST(bdb_writer_wallet_records) {
         recs.push_back(w);
     }
     std::string err;
-    std::string path = "/tmp/btc_legacy_bdb_wallet_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_bdb_wallet_test.dat").string();
     EXPECT(write_bdb_hash_file(path, recs, 4096, &err));
     Reader r;
     std::string rerr;

@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <filesystem>
 
 using namespace btclegacy::wallet;
 using namespace btclegacy::bdb;
@@ -62,7 +63,7 @@ TEST(wallet_parser_end_to_end) {
         recs.push_back(w);
     }
     std::string err;
-    std::string path = "/tmp/btc_legacy_wallet_parser_e2e.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_wallet_parser_e2e.dat").string();
     EXPECT(write_bdb_hash_file(path, recs, 4096, &err));
     ParsedWallet w;
     bool is_bdb = false;
@@ -85,7 +86,7 @@ TEST(wallet_parser_unknown_records_preserved) {
     w.value = std::vector<uint8_t>({'d','a','t','a'});
     recs.push_back(w);
     std::string err;
-    std::string path = "/tmp/btc_legacy_wallet_unknown_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_wallet_unknown_test.dat").string();
     EXPECT(write_bdb_hash_file(path, recs, 4096, &err));
     ParsedWallet pw;
     bool is_bdb = false;

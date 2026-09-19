@@ -14,6 +14,7 @@
 #include <cstring>
 #include <vector>
 #include <string>
+#include <filesystem>
 
 using namespace btclegacy::wallet;
 using namespace btclegacy::bdb;
@@ -68,7 +69,7 @@ TEST(passphrase_verify_correct) {
     cwr.value = sc.take();
     recs.push_back(cwr);
 
-    std::string path = "/tmp/btc_legacy_passphrase_verify_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_passphrase_verify_test.dat").string();
     EXPECT(write_bdb_hash_file(path, recs, 4096, &err));
 
     ParsedWallet pw;
@@ -101,7 +102,7 @@ TEST(passphrase_verify_wrong_returns_false_not_crash) {
     std::vector<WriteRecord> recs;
     recs.push_back(make_mkey_record(mk));
     std::string err;
-    std::string path = "/tmp/btc_legacy_passphrase_wrong_test.dat";
+    std::string path = (std::filesystem::temp_directory_path() / "btc_legacy_passphrase_wrong_test.dat").string();
     EXPECT(write_bdb_hash_file(path, recs, 4096, &err));
     ParsedWallet pw;
     bool is_bdb = false;
