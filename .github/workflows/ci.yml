@@ -1,0 +1,168 @@
+# ===========================================================================
+#  btc-legacy — Continuous Integration
+#  Runs on every push and pull request, on Ubuntu 22.04 and Windows 2022 in
+#  parallel. Builds all four binaries (btc-legacy, btc-legacy-brute,
+#  btc-legacy-unit-tests, btc-legacy-fuzz) with static OpenSSL linking and
+#  uploads the standalone inspection / brute binaries as artifacts.
+# ===========================================================================
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so we don't waste CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Restrict GITHUB_TOKEN permissions to the minimum required.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+
+    steps:
+      # ---------------------------------------------------------------------
+      # 1. Checkout (shallow — we only need the current tree to build).
+      # ---------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ---------------------------------------------------------------------
+      # 2a. Ubuntu: install build deps + cache CMake build dir.
+      # ---------------------------------------------------------------------
+      - name: (Ubuntu) Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libssl-dev
+
+      - name: (Ubuntu) Cache CMake build directory
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: cmake-build-ubuntu-${{ github.sha }}
+          restore-keys: |
+            cmake-build-ubuntu-
+
+      # ---------------------------------------------------------------------
+      # 2b. Windows: set up MSYS2/MinGW64 environment with CMake, OpenSSL
+      #     and the full toolchain.
+      # ---------------------------------------------------------------------
+      - name: (Windows) Setup MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-toolchain
+
+      - name: (Windows) Cache MSYS2 packages
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: C:\msys64\var\cache\pacman\pkg
+          key: msys2-pkgs-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            msys2-pkgs-${{ runner.os }}-
+
+      - name: (Windows) Cache CMake build directory
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: cmake-build-windows-${{ github.sha }}
+          restore-keys: |
+            cmake-build-windows-
+
+      # ---------------------------------------------------------------------
+      # 3. Configure CMake (Release, static OpenSSL, no -Werror in CI).
+      #    Use the MSYS2 shell on Windows so cmake/gcc pick up MinGW64.
+      # ---------------------------------------------------------------------
+      - name: Configure (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_STATIC=ON \
+            -DBTC_LEGACY_WERROR=OFF
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_STATIC=ON \
+            -DBTC_LEGACY_WERROR=OFF
+
+      # ---------------------------------------------------------------------
+      # 4. Build all four targets.
+      # ---------------------------------------------------------------------
+      - name: Build (Ubuntu)
+        if: runner.os == 'Linux'
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cmake --build build -j"$(nproc)"
+
+      # ---------------------------------------------------------------------
+      # 5. Run ctest — unit tests + integration tests against fixtures.
+      # ---------------------------------------------------------------------
+      - name: Test (Ubuntu)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+      # ---------------------------------------------------------------------
+      # 6. Upload the standalone inspection + brute binaries as artifacts
+      #    (90-day retention). Unit-test and fuzz binaries are not shipped.
+      # ---------------------------------------------------------------------
+      - name: Upload artifacts (Ubuntu)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-legacy-linux-x64
+          path: |
+            build/btc-legacy
+            build/btc-legacy-brute
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload artifacts (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-legacy-windows-x64
+          path: |
+            build/btc-legacy.exe
+            build/btc-legacy-brute.exe
+          if-no-files-found: error
+          retention-days: 90

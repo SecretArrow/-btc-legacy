@@ -1,0 +1,257 @@
+# ===========================================================================
+#  btc-legacy — Release pipeline
+#  Triggered on push to main (after CI passes), on `v*` tags, or via manual
+#  workflow_dispatch. Re-builds all four targets in Release with static
+#  OpenSSL on both Ubuntu and Windows, then publishes a GitHub Release with
+#  standalone binaries + zipped source tree.
+# ===========================================================================
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Don't run two release jobs for the same ref at the same time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Required to create GitHub Releases and upload assets.
+permissions:
+  contents: write
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Build matrix — produces the binaries on both OSes.
+  # -------------------------------------------------------------------------
+  build:
+    name: Build release artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # -------------------------------------------------------------------
+      # Ubuntu dependencies — one apt-get call, no upgrade step.
+      # -------------------------------------------------------------------
+      - name: (Ubuntu) Install build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake libssl-dev
+
+      # -------------------------------------------------------------------
+      # Windows dependencies — MSYS2 / MinGW64 toolchain + OpenSSL.
+      # -------------------------------------------------------------------
+      - name: (Windows) Setup MSYS2
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-toolchain
+
+      # -------------------------------------------------------------------
+      # Configure + build with static linking.
+      # -------------------------------------------------------------------
+      - name: Configure (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_STATIC=ON \
+            -DBTC_LEGACY_WERROR=OFF
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build \
+            -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_STATIC=ON \
+            -DBTC_LEGACY_WERROR=OFF
+
+      - name: Build (Ubuntu)
+        if: runner.os == 'Linux'
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cmake --build build -j"$(nproc)"
+
+      # -------------------------------------------------------------------
+      # Smoke-test: run ctest to make sure we don't release a broken
+      # binary. (Unit tests + fixture-driven integration tests.)
+      # -------------------------------------------------------------------
+      - name: Test (Ubuntu)
+        if: runner.os == 'Linux'
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+      # -------------------------------------------------------------------
+      # Stage binaries with the release naming convention under dist/.
+      # -------------------------------------------------------------------
+      - name: Stage release binaries (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          cp build/btc-legacy       dist/btc-legacy-linux-x64
+          cp build/btc-legacy-brute dist/btc-legacy-brute-linux-x64
+
+      - name: Stage release binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          mkdir -p dist
+          cp build/btc-legacy.exe       dist/btc-legacy-windows-x64.exe
+          cp build/btc-legacy-brute.exe dist/btc-legacy-brute-windows-x64.exe
+
+      - name: Upload staged binaries (Ubuntu)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-legacy-linux-x64-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload staged binaries (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-legacy-windows-x64-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Source zip — single job, no matrix needed.
+  # -------------------------------------------------------------------------
+  src-zip:
+    name: Build source zip
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create source zip
+        run: |
+          mkdir -p dist
+          # Exclude build output and CI artifacts from the source archive.
+          git archive --format=zip --prefix=btc-legacy/ \
+            -o dist/btc-legacy-src.zip HEAD
+          # Belt-and-braces: ensure build/ and dist/ are not in the zip.
+          # (git archive only tracks committed files, so this is already
+          #  guaranteed, but the comment documents the intent for any
+          #  contributor reading this file.)
+
+      - name: Upload source zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-legacy-src-zip
+          path: dist/btc-legacy-src.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # Publish the GitHub Release with all assets.
+  # -------------------------------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build, src-zip]
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # -------------------------------------------------------------------
+      # Download all staged artifacts from the matrix build job + src-zip.
+      # -------------------------------------------------------------------
+      - name: Download Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: btc-legacy-linux-x64-release
+          path: assets
+
+      - name: Download Windows binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: btc-legacy-windows-x64-release
+          path: assets
+
+      - name: Download source zip
+        uses: actions/download-artifact@v4
+        with:
+          name: btc-legacy-src-zip
+          path: assets
+
+      - name: Verify release assets
+        run: |
+          echo "=== Assets staged under ./assets ==="
+          ls -la assets/
+
+      # -------------------------------------------------------------------
+      # Compute the release tag: use the pushed tag for tag triggers,
+      # otherwise derive v1.0.<run_number> for main-branch pushes and
+      # workflow_dispatch runs.
+      # -------------------------------------------------------------------
+      - name: Compute release tag
+        id: tag
+        run: |
+          if [ -n "${GITHUB_REF_NAME:-}" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}"          >> "$GITHUB_OUTPUT"
+            echo "make_latest=false"               >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v1.0.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true"                  >> "$GITHUB_OUTPUT"
+            echo "prerelease=false"                 >> "$GITHUB_OUTPUT"
+          fi
+
+      # -------------------------------------------------------------------
+      # Create / update the release. `generate_release_notes` builds the
+      # body from commit messages between the previous and current tag.
+      # -------------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: btc-legacy ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          make_latest: ${{ steps.tag.outputs.make_latest }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          fail_on_unmatched_files: true
+          files: |
+            assets/btc-legacy-linux-x64
+            assets/btc-legacy-brute-linux-x64
+            assets/btc-legacy-windows-x64.exe
+            assets/btc-legacy-brute-windows-x64.exe
+            assets/btc-legacy-src.zip

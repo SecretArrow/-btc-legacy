@@ -1,0 +1,142 @@
+# ===========================================================================
+#  btc-legacy — Auto-fix retry / escalation
+#  Triggered after ci.yml completes (workflow_run). Strategy:
+#    1. If ci.yml failed AND this is its first attempt → retry it once.
+#    2. If ci.yml failed AND this is its second (or later) attempt →
+#       open a GitHub issue with the failure link so a human can
+#       investigate. Do NOT retry further.
+#  This workflow is intentionally minimal — no LLM / CodeQL, just a sane
+#  "retry once, then escalate" policy that catches transient flakes
+#  without hammering CI on real regressions.
+# ===========================================================================
+name: Auto-fix
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+# Auto-fix jobs themselves should not be cancelled mid-flight.
+concurrency:
+  group: auto-fix-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+# Need `actions: write` to re-run the CI workflow,
+# `issues: write` to open the escalation issue.
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+jobs:
+  retry-or-escalate:
+    name: Retry once, then escalate
+    # Only act when the triggering CI run actually failed (skip success /
+    # cancellation / skipped conclusions).
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+
+    steps:
+      # -------------------------------------------------------------------
+      # Decide: retry (attempt 1) or escalate (attempt 2+).
+      # `run_attempt` starts at 1 for the original run and increments for
+      # each re-run, so this is a reliable single-source-of-truth counter.
+      # -------------------------------------------------------------------
+      - name: Determine retry vs escalate
+        id: decide
+        run: |
+          attempt="${{ github.event.workflow_run.run_attempt }}"
+          echo "Run attempt: ${attempt}"
+          if [ "${attempt}" = "1" ]; then
+            echo "should_retry=true"   >> "$GITHUB_OUTPUT"
+            echo "should_escalate=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_retry=false"   >> "$GITHUB_OUTPUT"
+            echo "should_escalate=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -------------------------------------------------------------------
+      # Retry path — re-run only the failed jobs in the original CI run.
+      # -------------------------------------------------------------------
+      - name: Re-run failed CI jobs
+        if: ${{ steps.decide.outputs.should_retry == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = context.payload.workflow_run.id;
+            const branch = context.payload.workflow_run.head_branch;
+            const sha = context.payload.workflow_run.head_sha;
+            core.info(`Retrying CI run ${runId} (attempt 2) on ` +
+                      `branch=${branch}, sha=${sha}`);
+            await github.rest.actions.reRunWorkflowFailedJobs({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              run_id: runId,
+            });
+            core.info('Re-run dispatched. The workflow_run event will ' +
+                      'fire again when the retried run completes.');
+
+      # -------------------------------------------------------------------
+      # Escalation path — search for an existing open issue with the same
+      # title; comment on it if found, otherwise open a new one. Avoids
+      # flooding the issue tracker with duplicates.
+      # -------------------------------------------------------------------
+      - name: Open / update escalation issue
+        if: ${{ steps.decide.outputs.should_escalate == 'true' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const sha    = context.payload.workflow_run.head_sha;
+            const branch = context.payload.workflow_run.head_branch;
+            const url    = context.payload.workflow_run.html_url;
+            const attempt = context.payload.workflow_run.run_attempt;
+            const title  = `CI failing on ${context.repo.owner}/` +
+                           `${context.repo.repo}@${sha.slice(0, 10)}`;
+            const body = [
+              `**Automated escalation from the auto-fix workflow.**`,
+              ``,
+              `The CI workflow (\`ci.yml\`) has now failed **twice** on`,
+              `commit \`${sha}\` (branch \`${branch}\`). The retry did not`,
+              `clear it, so this looks like a real regression rather than`,
+              `a flaky test.`,
+              ``,
+              `### Latest failed run`,
+              `- URL: ${url}`,
+              `- Attempt: ${attempt}`,
+              ``,
+              `### Next steps`,
+              `1. Click the run link above and open the failing job's logs.`,
+              `2. If it's a flaky test, consider adding a retry inside`,
+              `   \`ctest\` or marking it \`WILL_FAIL\`.`,
+              `3. If it's a real regression, push a fix commit — CI will`,
+              `   re-run automatically on push.`,
+              ``,
+              `_This issue was auto-generated by the ` +
+              `\`.github/workflows/auto-fix.yml\` workflow._`,
+            ].join('\n');
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.data.find(i => i.title === title);
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: existing.number,
+                body,
+              });
+              core.info(`Commented on existing issue #${existing.number}.`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                title,
+                body,
+                labels: ['ci', 'auto-fix', 'bug'],
+              });
+              core.info(`Opened new issue #${created.data.number}.`);
+            }

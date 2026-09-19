@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+build-asan/
+build-*/
+*.o
+*.o.d
+*.obj
+*.exe.manifest
+
+# Test run residue
+tests/fixtures/*.backup-*
+tests/fixtures/*.tried
+tests/fixtures/*.brute-state
+result.txt
+*.tried
+*.brute-state
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# CI workspace
+.ci-cache/
