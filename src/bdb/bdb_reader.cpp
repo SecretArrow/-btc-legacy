@@ -152,10 +152,10 @@ bool Reader::read_page(uint32_t pgno, std::vector<uint8_t>& out, std::string& er
     }
     out.resize(meta_.pagesize);
 #ifdef _WIN32
-    if (::_lseeki64(fd_, __int64(off), SEEK_SET) != __int64(off)) {
+    if (::_lseeki64(fd_, static_cast<long long>(off), SEEK_SET) != static_cast<long long>(off)) {
         err = "seek failed"; return false;
     }
-    auto r = ::_read(fd_, out.data(), meta_.pagesize);
+    auto r = ::_read(fd_, out.data(), int(meta_.pagesize));
 #else
     if (::lseek(fd_, off_t(off), SEEK_SET) != off_t(off)) {
         err = "seek failed"; return false;
